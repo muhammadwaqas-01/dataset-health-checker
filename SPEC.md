@@ -27,13 +27,13 @@ The tool performs the following five checks.
 
 Identifies columns containing blank or missing values.
 
-For each affected column, the report includes the number or proportion of missing values.
+For each affected column, the report includes the number and proportion of missing values.
 
 Severity rules:
 
-- **INFO:** Some values are missing, but the missing-value proportion is below 5%.
-- **WARNING:** At least 5% but less than 30% of the column's values are missing.
-- **ERROR:** At least 30% of the column's values are missing.
+- **INFO:** The missing-value proportion is below 5%.
+- **WARNING:** The missing-value proportion is at least 5% but below 30%.
+- **ERROR:** The missing-value proportion is at least 30%.
 - No finding is generated for a column with no missing values.
 
 The check uses configurable thresholds with default values of `warn_at=0.05` and `error_at=0.30`.
@@ -42,7 +42,9 @@ The check uses configurable thresholds with default values of `warn_at=0.05` and
 
 Identifies rows that are identical across all columns.
 
-When duplicates are found, the report includes the number of duplicate occurrences and the first few relevant row numbers.
+When duplicates are found, the report includes the number of duplicate occurrences and their CSV line numbers, limited by the configured maximum.
+
+The default maximum number of displayed line numbers is `5`.
 
 Severity: **WARNING** when duplicate rows are found.
 
@@ -54,7 +56,7 @@ Constant columns may provide little or no useful information for analysis.
 
 Severity: **WARNING** when a constant column is found.
 
-Missing values are ignored when determining whether a column is constant.
+Blank and whitespace-only values are ignored when determining whether a column is constant. Columns containing no present values are skipped.
 
 ### 3.4 Outliers
 
@@ -67,16 +69,22 @@ The check calculates:
 - First quartile (Q1)
 - Third quartile (Q3)
 - Interquartile range (IQR)
-- Lower and upper outlier bounds
+- Lower and upper outlier fences
 
-Values outside the calculated bounds are considered potential outliers.
+The fences are calculated as:
+
+- Lower fence = Q1 − (k × IQR)
+- Upper fence = Q3 + (k × IQR)
+
+Values below the lower fence or above the upper fence are considered potential outliers.
 
 Requirements:
 
 - Use NumPy's `nanpercentile` so missing values do not affect the quartile calculations.
-- Skip columns with fewer than four present numeric values and report an INFO finding.
-- When outliers are found, report their count and relevant row numbers.
-- Handle an IQR of zero safely so that a constant column is not incorrectly reported as containing many outliers.
+- Exclude non-finite values from the calculations.
+- Skip columns with fewer than four valid numeric values and report an INFO finding.
+- When outliers are found, report their count and CSV line numbers.
+- Handle an IQR of zero without incorrectly flagging values that fall on the calculated fences.
 
 Severity: **WARNING** when outliers are detected.
 
@@ -91,13 +99,13 @@ The default absolute correlation threshold is `0.95`.
 Requirements:
 
 - Calculate Pearson correlation using NumPy.
-- Use only rows where both columns have present numeric values.
+- Use only rows where both columns have finite numeric values.
 - Skip pairs with fewer than five shared valid observations.
 - Skip constant columns to avoid invalid correlation calculations.
 - Report each column pair only once.
 - Report the names of both columns and their correlation value.
 
-Severity: **WARNING** when the absolute correlation is greater than or equal to `0.95`.
+Severity: **WARNING** when the absolute correlation is greater than or equal to the configured threshold.
 
 Correlation does not imply causation.
 
@@ -109,19 +117,25 @@ The tool supports three severity levels:
 |---|---|
 | `ERROR` | A serious data quality issue |
 | `WARNING` | A potential issue that may need attention |
-| `INFO` | Informational result or limitation of a check |
+| `INFO` | An informational result or limitation of a check |
 
-Findings are ordered from highest to lowest severity:
+Severity values are ordered as follows:
 
 1. ERROR
 2. WARNING
 3. INFO
 
-Each finding contains the check name, an optional column reference, its severity, and a human-readable message.
+Each finding contains the check name, a column reference, its severity, and a human-readable message.
+
+The `Finding` dataclass is immutable.
+
+The `Dataset` object contains the CSV headers, rows, numeric columns, and text columns.
 
 ## 5. Reports
 
 The tool supports two output formats: text and JSON.
+
+Both report formats include dataset summary information and the findings supplied to the formatter.
 
 ### 5.1 Text Report
 
@@ -129,17 +143,26 @@ The text report includes:
 
 - Dataset row count
 - Dataset column count
+- Total number of findings
 - Number of findings at each severity level
-- Findings grouped by severity, from ERROR to INFO
+- Findings grouped by severity in ERROR, WARNING, INFO order
 - A clear message when no findings are present
+
+The text formatter returns a string rather than printing directly to the terminal.
 
 ### 5.2 JSON Report
 
-The JSON report contains the same summary information and findings as the text report in a machine-readable format.
+The JSON report contains:
+
+- A summary with row count, column count, total findings, and severity counts
+- A list of findings containing the check name, column, severity, and message
+- A message indicating that no findings were found when the findings list is empty
 
 Severity values are represented as strings, such as `"ERROR"`, `"WARNING"`, and `"INFO"`.
 
-The report-formatting functions return strings instead of printing directly to the terminal.
+The JSON formatter returns a JSON string rather than printing directly to the terminal.
+
+The JSON report preserves the order of findings supplied to the formatter. It does not independently sort findings by severity.
 
 ## 6. Command-Line Interface
 
@@ -147,35 +170,57 @@ The tool is launched using `main.py`.
 
 Basic usage:
 
-`python main.py data/sample.csv`
+```powershell
+python main.py data/sample.csv
+```
 
 Available arguments:
 
 - `path`: Required path to the input CSV file.
 - `--format`: Output format, either `text` or `json`. Defaults to `text`.
-- `--fail-on`: Minimum severity that causes a non-zero result. Accepts `warning` or `error`. Defaults to `error`.
+- `--fail-on`: Minimum severity that causes a non-zero exit code. Accepts `warning` or `error`. Defaults to `error`.
 
 Examples:
 
-`python main.py data/sample.csv --format text`
+Generate a text report:
 
-`python main.py data/sample.csv --format json`
+```powershell
+python main.py data/sample.csv --format text
+```
 
-`python main.py data/sample.csv --fail-on warning`
+Generate a JSON report:
 
-The command-line runner loads the dataset, executes all five checks, formats the report, and returns the appropriate exit code.
+```powershell
+python main.py data/sample.csv --format json
+```
+
+Treat warnings and errors as failures:
+
+```powershell
+python main.py data/sample.csv --fail-on warning
+```
+
+Treat only errors as failures:
+
+```powershell
+python main.py data/sample.csv --fail-on error
+```
+
+The command-line runner loads the dataset, executes all five checks, formats the report, prints it to the terminal, and returns the appropriate exit code.
 
 ## 7. Error Handling and Exit Codes
 
-The tool handles input-file errors by displaying a clear error message on standard error.
+Input-file reading errors are reported to standard error.
 
 Exit codes:
 
 - **0:** The tool ran successfully and no finding reached the configured `--fail-on` severity.
-- **1:** At least one finding reached the configured `--fail-on` severity, or the input file could not be processed.
+- **1:** At least one finding reached the configured `--fail-on` severity, or an input-file reading error occurred.
 - **2:** Invalid command-line usage, handled by `argparse`.
 
-For example, with the default `--fail-on error`, WARNING and INFO findings alone do not cause exit code 1.
+For example, with the default `--fail-on error`, WARNING and INFO findings alone do not cause exit code `1`.
+
+With `--fail-on warning`, either WARNING or ERROR findings cause exit code `1`.
 
 ## 8. Testing
 
@@ -195,7 +240,15 @@ Tests cover:
 - Text and JSON report formatting
 - CLI arguments, output, and exit codes
 
-Temporary files should be used where appropriate so tests do not depend on the user's actual files.
+Temporary files are used where appropriate so tests do not depend on the user's actual files.
+
+Run the complete test suite from the project root:
+
+```powershell
+python -m pytest
+```
+
+The current verified test suite contains 33 passing tests.
 
 ## 9. Project Structure
 
@@ -207,6 +260,11 @@ dataset-health-checker/
 │   ├── checks.py
 │   └── report.py
 ├── tests/
+│   ├── test_checks.py
+│   ├── test_cli.py
+│   ├── test_data_checks.py
+│   ├── test_loader.py
+│   └── test_report.py
 ├── data/
 │   └── sample.csv
 ├── main.py
@@ -228,3 +286,11 @@ The project will not:
 - Infer causal relationships from correlated columns.
 
 The purpose is to identify and report potential data quality issues, not to make automatic decisions about how the dataset should be changed.
+
+## 11. Current Project Status
+
+The project implements five data quality checks, supports text and JSON reports, provides configurable CLI failure thresholds, and includes automated tests.
+
+The sample dataset has been verified to produce five WARNING findings.
+
+The test suite has been run successfully with 33 passing tests.

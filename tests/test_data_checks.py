@@ -1,12 +1,16 @@
 
 import pytest
+import numpy as np
 
 from checker.checks import (
     Dataset,
     Severity,
     MissingValuesCheck,
     DuplicateRowsCheck,
+    OutlierCheck,
+    CorrelationCheck,
 )
+
 
 
 def make_dataset(headers, rows):
@@ -120,3 +124,103 @@ def test_no_duplicate_rows():
     )
 
     assert DuplicateRowsCheck().run(dataset) == []
+def make_outlier_dataset(values):
+    return Dataset(
+        headers=["score"],
+        rows=[{"score": str(value)} for value in values],
+        numeric_columns={
+            "score": np.asarray(values, dtype=float)
+        },
+        text_columns={},
+    )
+
+
+def test_outlier_check_detects_known_outlier():
+    dataset = make_outlier_dataset([10, 11, 12, 13, 100])
+
+    findings = OutlierCheck().run(dataset)
+
+    assert len(findings) == 1
+    assert findings[0].column == "score"
+    assert findings[0].severity == Severity.WARNING
+    assert "Found 1 potential outlier(s)" in findings[0].message
+    assert "CSV line numbers: 6" in findings[0].message
+
+
+def test_outlier_check_returns_no_finding_without_outliers():
+    dataset = make_outlier_dataset([10, 11, 12, 13])
+
+    findings = OutlierCheck().run(dataset)
+
+    assert findings == []
+
+
+def test_outlier_check_reports_info_for_fewer_than_four_values():
+    dataset = make_outlier_dataset([10, 20, 30])
+
+    findings = OutlierCheck().run(dataset)
+
+    assert len(findings) == 1
+    assert findings[0].severity == Severity.INFO
+    assert "Only 3 valid numeric values" in findings[0].message
+
+
+def test_outlier_check_ignores_nan_values():
+    dataset = make_outlier_dataset([10, 11, 12, 13, 100, np.nan])
+
+    findings = OutlierCheck().run(dataset)
+
+    assert len(findings) == 1
+    assert "CSV line numbers: 6" in findings[0].message
+
+
+def test_correlation_check_detects_perfect_correlation():
+    dataset = Dataset(
+        headers=["a", "b"],
+        rows=[],
+        numeric_columns={
+            "a": np.array([1, 2, 3, 4, 5], dtype=float),
+            "b": np.array([2, 4, 6, 8, 10], dtype=float),
+        },
+        text_columns={},
+    )
+
+    findings = CorrelationCheck().run(dataset)
+
+    assert len(findings) == 1
+    assert findings[0].severity == Severity.WARNING
+    assert "a" in findings[0].column
+    assert "b" in findings[0].column
+    assert "1.0000" in findings[0].message
+
+
+def test_correlation_check_ignores_uncorrelated_columns():
+    dataset = Dataset(
+        headers=["a", "b"],
+        rows=[],
+        numeric_columns={
+            "a": np.array([1, 2, 3, 4, 5], dtype=float),
+            "b": np.array([5, 3, 1, 3, 5], dtype=float),
+        },
+        text_columns={},
+    )
+
+    findings = CorrelationCheck().run(dataset)
+
+    assert findings == []
+
+
+def test_correlation_check_skips_constant_column():
+    dataset = Dataset(
+        headers=["a", "b"],
+        rows=[],
+        numeric_columns={
+            "a": np.array([7, 7, 7, 7, 7], dtype=float),
+            "b": np.array([1, 2, 3, 4, 5], dtype=float),
+        },
+        text_columns={},
+    )
+
+    findings = CorrelationCheck().run(dataset)
+
+    assert findings == []
